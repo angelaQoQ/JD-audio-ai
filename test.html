@@ -1,0 +1,661 @@
+<!--
+ * @Author: your name
+ * @Date: 2020-01-09 21:50:41
+ * @LastEditTime : 2020-01-14 16:09:37
+ * @LastEditors  : Please set LastEditors
+ * @Description: 测试JD语音接口demo
+ * @FilePath: \JD语音demo\JD语音测试代码\test.html
+ -->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Document</title>
+    <style>
+        audio {
+            width: 200px;
+            height: 50px;
+        }
+
+        #audioToolbar {
+            width: 300px;
+            height: 1px;
+            position: relative;
+            border-top: 1px solid #333;
+            margin-top: 50px;
+        }
+
+        #moveDiv {
+            position: absolute;
+            left: 95px;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+            border-radius: 50%;
+            border: 2px solid #fff;
+            box-shadow: #333;
+            background-color: yellow;
+            font-size: 10px;
+            color: #333;
+            text-align: center;
+            overflow: hidden;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <script src="./vue.min.js"></script>
+    <script src="./md5.min.js"></script>
+    <script src="./axios.min.js"></script>
+    <script src="./utf8.js"></script>
+
+    <div id="app">
+
+        <textarea name=" name" cols="100" rows="30" v-model="blog"></textarea>
+
+        <button @click="initBlogContent">点击发送内容</button>
+
+        <br>
+        <button @click="ctrlSpeed('0.5')">.5速度</button>
+        <button @click="ctrlSpeed('2.0')">2倍速度</button>
+
+        <br>
+        <div id="audioToolbar">
+            <div id="moveDiv" @mousedown="bardown($event)" @touchstart="bardown($event)"
+                @mousemove.stop="barmove($event)" @touchmove.stop="barmove($event)" @mouseup="barend($event)"
+                @touchend="barend($event)">
+                {{speed}}
+            </div>
+        </div>
+
+        <br>
+        <ul>
+            <button @click="voiceChoice('1')">磁性男生</button>
+            <button @click="voiceChoice('0')">自然女生 </button>
+            <button @click="voiceChoice('3')">自然女生2 </button>
+        </ul>
+        <br>
+
+
+        <ul>
+            <button @click="clearTimeOut()">关闭定时</button>
+            <button @click="setTimeOut('10')">10</button>
+            <button @click="setTimeOut('20')">20</button>
+            <button @click="setTimeOut('30')">30</button>
+        </ul>
+
+        <br>
+        1
+        <audio autobuffer="autobuffer" controls="true" autoplay="autoplay" @ended="changeAudioSource($event)"
+            :src="'data:audio/mpeg;base64,'+audioSrc"></audio>
+
+        <script>
+
+            Vue.prototype.axios = axios
+
+            const vm = new Vue({
+                el: "#app",
+                data: {
+
+                    speed: 1.0, // 播放速度控制
+                    timeout: 0, // 定时时间
+
+                    flags: false,
+                    position: { x: 0, y: 0 },
+                    nx: '', ny: '', dx: '', dy: '', xPum: '', yPum: '',
+
+
+                    blog: "",   // 全部文章内容
+                    audioSrc: "",
+                    abortMissionsArr: [], // 终止请求函数的存放数组
+                    isFirstRequest: true, // 是否是第一次请求, 第一次jd请求时,只发送一次axios请求, 第二次开始, 批量发送请求
+                    blogArr: [], // 文章内容数组
+                    base64ResultArr: [], // base64响应容器 , key: 请求时的时间戳, val:响应的base64
+                    currentAudio: { // 用户当前播放的资源内容
+                        index: "",   // 音频资源数组中的索引
+                        audioSrc: "",    // 资源文件:base4
+                        timeStamp: "",   // 本资源请求的时间戳
+                    },
+
+                    baseURL: "/JD",
+                    appkey: "",     // JD测试接口免费购买
+                    secretKey: "",  // JD测试接口免费购买
+
+                    timeStamp: 0,
+
+                    req: {
+                        method: "POST",
+                        url: "/JD",
+                        headers: {
+                            "Service-Type": "synthesis", //固定值, 服务类型
+                            "Request-Id": "65845428-de85-11e8-9517-040973d59a1e", // 请求语音串标识码
+                            "Sequence-Id": -1, // 1标识非流式,一次性合成返回
+                            "Protocol": 1, // 通信协议版本号，这里设置固定值1
+                            "Net-State": 1, //客户端网络状态：1:WIFI，2:移动，3:联通，4:电信，5:其他  js获取不到运营商状态, 但是可以拿到网络状态, TODO:用户体验上做提醒"非wifi环境"
+                            "Applicator": 1, // 外部业务
+                            "Property": ""
+                        }
+                    },
+
+                    headPro: {
+                        "platform": 'Windows&Win64&10.0', // {平台}&{机型}&{系统版本号}
+                        "version": "1.0.0",
+                        "parameters": {
+                            "tt": 0, // UTF-8
+                            "aue": 3, // wav 1：pcm 2：opus 3：mp3
+                            "tim": 1, // "桃桃女声"
+                            "vol": "1.0", //音量
+                            "sp": "1.0", //语速
+                            "sr": 24000 //采样率
+                        }
+                    }
+
+                },
+                methods: {
+
+                    /**
+                     * @description: 获取最新的小说内容
+                     *      用户修改偏好设置时(速度,音色)时,获取最新的需要转换的小说内容, 把内容转成音频文件,加载执行
+                     * @param {type} 
+                     * @return: 
+                     */
+                    initBlogContent() {
+                        var _this = this
+
+                        // 初始化阅读状态
+                        _this.clearAll()
+
+                        // 获取资源
+                        _this.string2audio(_this.blog)
+                    },
+
+                    /**
+                     * @description: 全部初始化,归零,重置
+                     * @param {type} 
+                     * @return: 
+                     */
+                    clearAll() {
+                        var _this = this;
+                        _this.audioSrc = ""
+                        _this.abortMissionsArr = []
+                        _this.isFirstRequest = true
+                        _this.blogArr = []
+                        _this.base64ResultArr = []
+                        _this.currentAudio = {}
+                    },
+
+
+                    /**
+                     * @description: 接收文本, 拆分, 请求JD接口
+                     * @param {blog : string} 
+                     * @return: 
+                     */
+                    string2audio(blog) {
+                        var _this = this
+
+                        // 拆分数组
+                        _this.blogArr = _this.getContentParts(blog)
+
+                        // 数组第一条短内容, 请求JD语音接口
+                        _this.audioAjax(_this.blogArr[0], 0)
+
+                    },
+
+
+
+                    /**
+                     * @description: 把字符串掐断: 第一段100个字符,后续按照200, 300...递增
+                     * @param {content:string} 
+                     * @return: 返回拆分的数组
+                     */
+                    getContentParts(content) {
+                        var contentArr = content.split('')
+                        var arr = []
+                        var flag = true
+                        var len = 100   // 掐段递增单位
+                        var maxLen = 400    // 最大的字符个数
+                        while (flag) {
+                            if (contentArr.length >= maxLen) {
+                                arr.push(contentArr.splice(0, len).join(''))
+                                len = len * 2 > maxLen ? maxLen : len * 2
+                            } else {
+                                arr.push(contentArr.join(''))
+                                flag = false
+                            }
+                        }
+                        return arr
+                    },
+
+
+
+                    /**
+                     * @description: 点击携带数据请求JDai接口, 存储到base64音频文件数组中, 依次取出替换||拼接为audio的src
+                     * @param {contentData:请求jd接口的字符串 , index: 字符串的索引} 
+                     * @return: null
+                     */
+                    audioAjax(contentData, index) {
+                        var _this = this
+
+                        // 准备数据
+                        _this.timeStamp = (new Date()).getTime() // 本次请求的时间戳
+                        var timeStampCurrentNow = _this.timeStamp // 局部变量在响应时做记录
+                        var index = index   // 字符串的索引
+
+                        _this.req.url = `${this.baseURL}/?appkey=${this.appkey}&timestamp=${this.timeStamp}&sign=${md5(this.secretKey + this.timeStamp)}`
+
+                        _this.req.headers['Request-Id'] = _this.generateUUID()
+
+                        _this.req.headers['Property'] = JSON.stringify(_this.headPro)
+
+                        // 发送请求
+                        _this
+                            .axios({
+
+                                // JD接口配置项
+                                ..._this.req,
+
+                                // 需要语音话的字符串
+                                data: { "": contentData },
+
+                                // 放弃请求配置
+                                cancelToken: new axios.CancelToken(function executor(c) {
+                                    _this.abortMissionsArr.push(c)
+                                })
+
+                            })
+                            .then((res) => {
+                                if (res.data.code == 10000 && res.data.result.status == 0) {
+
+                                    // 存储数据
+                                    _this.base64ResultArr.push({
+                                        index: index,
+                                        timeStamp: timeStampCurrentNow,
+                                        audioSrc: res.data.result.audio
+                                    })
+
+                                    // 如果第一次请求, 给audio的src直接赋值,开启播放;修改isFirstRequest为false
+                                    if (index == 0) {
+                                        // 当前在听的段落
+                                        _this.currentAudio = _this.base64ResultArr[0]
+
+                                        // 当前的段落的audio资源
+                                        _this.audioSrc = _this.currentAudio.audioSrc
+                                        _this.isFirstRequest = false
+
+                                        console.log("当前的audio资源");
+                                        console.log(_this.currentAudio);
+                                    }
+
+                                }
+                            })
+                            .catch((err) => { })
+                    },
+
+
+
+                    /**
+                     * @description: 
+                     * 判断当前记录的播放内容currentAudio和base64ResultArr的剩余内容, 取下一个base64给audioSrc赋值forceUpdate,
+                     * 
+                     * audio播放结束后,切换下一内容资源, (没有剩余资源时,提示播放完毕或继续请求 下一章节. )
+                     * 下载的内容已经全部播放完毕TODO: 播放下一章节, 还是提醒用户
+                     * 在base64资源数组中过滤出真实索引对应的base64资源
+                     * 
+                     * @param {e:事件对象} 
+                     * @return: null
+                     */
+                    changeAudioSource(e) {
+                        var _this = this
+                        var audioTag = e.target
+
+                        // 下一个播放的真实索引
+                        var nextAudioIndex = _this.currentAudio.index + 1
+                        console.log("下一个索引是:" + nextAudioIndex);
+
+                        // 假如无后续
+                        if (nextAudioIndex > _this.base64ResultArr.length) return console.log("没有资源了");
+                        // 有后续资源
+                        _this.base64ResultArr.forEach(function (item) {
+                            if (item.index == nextAudioIndex) {
+                                // 修改audio标签的播放资源
+                                _this.currentAudio = item
+                                _this.audioSrc = item.audioSrc
+                                console.log("修改播放资源为")
+                                console.log(item);
+                            }
+                        })
+
+                    },
+
+
+
+                    /**
+                     * @description:  全局唯一值
+                     * @param {null} 
+                     * @return: string
+                     */
+                    generateUUID() {
+                        var d = new Date().getTime();
+                        var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                            var r = (d + Math.random() * 16) % 16 | 0;
+                            d = Math.floor(d / 16);
+                            return (c == 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+                        });
+                        return uuid;
+                    },
+
+
+                    /**
+                     * @description: 速度条事件处理函数
+                     * @param {type} 
+                     * @return: 
+                     */
+                    bardown(e) {
+                        this.flags = true;
+                        var touch;
+                        if (e.touches) {
+                            touch = e.touches[0];
+                        } else {
+                            touch = e.target;
+                        }
+                        this.position.x = touch.offsetLeft;
+                        this.dx = touch.offsetLeft;
+                    },
+                    barmove(e) {
+                        if (this.flags) {
+                            var touch;
+                            if (e.touches) {
+                                touch = e.touches[0];
+                            } else {
+                                touch = e.target
+                            }
+                            var base = audioToolbar.offsetLeft
+                            var ebase = touch.clientX
+                            var max = audioToolbar.offsetWidth - e.target.offsetWidth
+                            var current
+                            if (ebase - base > max) {
+                                current = max
+                            } else if (ebase - base < 0) {
+                                current = 0
+                            } else {
+                                current = ebase - base
+                            }
+                            moveDiv.style.left = current + "px"
+
+                            // 求比例值
+                            this.speed = (current * 1.5 / max + 0.5).toFixed(1)
+
+                            console.log(this.speed);
+
+                        }
+                    },
+                    barend(e) {
+                        this.flags = false;
+                        this.ctrlSpeed(this.speed)
+                    },
+
+                    /**
+                     * @description: 语速控制 
+                     *      用户跳调节语速时, 
+                     *          停止读书
+                     *          取消当前已发出请求
+                     *          重新发送请求
+                     *          更新用户偏好设置
+                     * @param {type} 
+                     * @return: 
+                     */
+                    ctrlSpeed(speed) {
+
+                        var _this = this
+
+                        // 终止下载任务
+                        _this.abortMission()
+
+
+                        _this.headPro.parameters.sp = speed;
+
+                        //暂停当前朗读,获取朗读到的位置
+                        _this.initBlogContent()
+
+                        // 更新用户偏好设置
+                        _this.updateUserHoby()
+
+                    },
+
+
+
+                    /**
+                     * @description: 音色选择
+                     * @param {type} 
+                     * @return: 
+                     */
+                    voiceChoice(voice) {
+                        var _this = this
+
+                        // 终止下载任务
+                        _this.abortMission()
+
+
+                        _this.headPro.parameters.tim = voice;
+
+                        //暂停当前朗读,获取朗读到的位置
+                        _this.initBlogContent()
+
+                        // 更新用户偏好设置
+                        _this.updateUserHoby()
+
+                    },
+
+
+                    /**
+                     * @description: 开启定时功能
+                     * @param {minit:分钟} 
+                     * @return: 
+                     */
+                    setTimeOut(minit) {
+                        var _this = this
+                        _this.timeout = minit * 60 * 1000
+                        // _this.timeout = minit * 1000 // 秒数用于测试
+                        window.setTimeout(function () {
+                            _this.audioSrc = ""
+                            _this.abortMission();
+                            _this.clearAll();
+                        }, _this.timeout)
+                    },
+
+
+                    /**
+                     * @description: 清除定时功能
+                     * @param {type} 
+                     * @return: 
+                     */
+                    clearTimeOut() {
+                        var _this = this
+                        window.clearTimeout(_this.timeout)
+                    },
+
+
+
+                    /**
+                     * @description: 自动开启下一章听书
+                     * @param {type} 
+                     * @return: 
+                     */
+
+
+
+
+                    /**
+                     * @description: 更新用户偏好设置
+                     * @param {type} 
+                     * @return: 
+                     */
+                    updateUserHoby() {
+                        console.log("记录偏好设置");
+                    },
+
+                    /**
+                     * @description: 终止当前的请求
+                     * @param {type} 
+                     * @return: 
+                     */
+                    abortMission() {
+                        if (this.abortMissionsArr.length == 0) return;
+                        this.abortMissionsArr.forEach(function (abFn) {
+                            abFn()
+                        })
+                    },
+
+
+                    // TOOLS  ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+
+                    /**
+                     * @description: 获取设备网络状态
+                     * @param {null} 
+                     * @return: string
+                     */
+                    getNetworkType() {
+                        var ua = navigator.userAgent;
+                        var networkStr = ua.match(/NetType\/\w+/) ? ua.match(/NetType\/\w+/)[0] : 'NetType/other';
+                        networkStr = networkStr.toLowerCase().replace('nettype/', '');
+                        var networkType;
+                        switch (networkStr) {
+                            case 'wifi':
+                                networkType = 'wifi';
+                                break;
+                            case '4g':
+                                networkType = '4g';
+                                break;
+                            case '3g':
+                                networkType = '3g';
+                                break;
+                            case '3gnet':
+                                networkType = '3g';
+                                break;
+                            case '2g':
+                                networkType = '2g';
+                                break;
+                            default:
+                                networkType = 'other';
+                        }
+                        return networkStr
+                    },
+
+                    /**
+                     * @description:  手机端判断各个平台浏览器及操作系统平台
+                     * @param {null} 
+                     * @return: string
+                     */
+                    checkPlatform() {
+
+                        var ua = navigator.userAgent.toLowerCase();
+                        console.log(ua);
+
+                        if (/android/i.test(navigator.userAgent)) {
+                            var test = /android\s([\w.]+)/;//IE
+                            var match = test.exec(ua);
+                            console.log(match);
+                            document.write("This is Android " + match[1] + " browser."); //这是Android平台下浏览器
+                            var version = match[1].split(".")[0];
+                            console.log("android" + version);
+                        }
+
+                        if (/(iPhone|iPad|iPod|iOS)/i.test(navigator.userAgent)) {
+                            var test = /os\s([\w_]+)/;//IE
+                            var match = test.exec(ua);
+                            var version = match[1].split("_")[0];
+
+                            console.log("IOS" + version);
+                        }
+
+                        if (/MicroMessenger/i.test(navigator.userAgent)) {
+                            document.write("MicroMessenger"); //这是微信平台下浏览器
+                        }
+                    },
+
+
+                    /**
+                     * @description: UTF-8转换
+                     * @param {p1:string} 
+                     * @return: string
+                     */
+                    b64toBlob(b64Data, contentType, sliceSize) {
+                        contentType = contentType || '';
+                        sliceSize = sliceSize || 512;
+
+                        var byteCharacters = atob(b64Data);
+                        var byteArrays = [];
+
+                        for (var offset = 0; offset < byteCharacters.length; offset += sliceSize) {
+                            var slice = byteCharacters.slice(offset, offset + sliceSize);
+
+                            var byteNumbers = new Array(slice.length);
+                            for (var i = 0; i < slice.length; i++) {
+                                byteNumbers[i] = slice.charCodeAt(i);
+                            }
+
+                            var byteArray = new Uint8Array(byteNumbers);
+
+                            byteArrays.push(byteArray);
+                        }
+
+                        var blob = new Blob(byteArrays, { type: contentType });
+                        return blob;
+                    },
+
+
+                    /** 
+                     * @description: 
+                     * @param {Bold} 
+                     * @return:null 
+                     */
+                    load(DataBlob) {
+
+                        if (!DataBlob) return false;
+
+                        let _this = this
+
+                        let fileReader = new FileReader(); // FileReader https://developer.mozilla.org/zh-CN/docs/Web/API/FileReader
+
+                        fileReader.readAsArrayBuffer(DataBlob)
+
+                        console.log(fileReader);
+
+
+                        fileReader.onload = function () {
+                            console.log(DataBlob);
+
+                            _this.audioSrc = window.URL.createObjectURL(DataBlob)
+                        }
+
+                    }
+                },
+
+                watch: {
+                    // 第一次请求相应成功后， 发送后续的ajax
+                    isFirstRequest: function (newVal, oldVal) {
+                        var _this = this
+                        if (newVal == false && _this.base64ResultArr.length > 0) {
+
+                            _this.blogArr.forEach(function (contentItem, index) {
+
+                                if (index > 0) {
+                                    _this.audioAjax(contentItem, index)
+                                }
+
+                            });
+
+                        }
+                    }
+                },
+            })
+
+        </script>
+</body>
+
+</html>
